@@ -21,37 +21,7 @@ import org.asynchttpclient.request.body.multipart.FilePart;
 import org.asynchttpclient.request.body.multipart.StringPart;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.zendesk.client.v2.model.AgentRole;
-import org.zendesk.client.v2.model.Attachment;
-import org.zendesk.client.v2.model.Audit;
-import org.zendesk.client.v2.model.Automation;
-import org.zendesk.client.v2.model.Brand;
-import org.zendesk.client.v2.model.Comment;
-import org.zendesk.client.v2.model.ComplianceDeletionStatus;
-import org.zendesk.client.v2.model.Field;
-import org.zendesk.client.v2.model.Forum;
-import org.zendesk.client.v2.model.Group;
-import org.zendesk.client.v2.model.GroupMembership;
-import org.zendesk.client.v2.model.Identity;
-import org.zendesk.client.v2.model.JobStatus;
-import org.zendesk.client.v2.model.Macro;
-import org.zendesk.client.v2.model.Metric;
-import org.zendesk.client.v2.model.Organization;
-import org.zendesk.client.v2.model.OrganizationField;
-import org.zendesk.client.v2.model.OrganizationMembership;
-import org.zendesk.client.v2.model.SatisfactionRating;
-import org.zendesk.client.v2.model.SearchResultEntity;
-import org.zendesk.client.v2.model.Status;
-import org.zendesk.client.v2.model.SuspendedTicket;
-import org.zendesk.client.v2.model.Ticket;
-import org.zendesk.client.v2.model.TicketForm;
-import org.zendesk.client.v2.model.TicketImport;
-import org.zendesk.client.v2.model.TicketResult;
-import org.zendesk.client.v2.model.Topic;
-import org.zendesk.client.v2.model.Trigger;
-import org.zendesk.client.v2.model.TwitterMonitor;
-import org.zendesk.client.v2.model.User;
-import org.zendesk.client.v2.model.UserField;
+import org.zendesk.client.v2.model.*;
 import org.zendesk.client.v2.model.hc.Article;
 import org.zendesk.client.v2.model.hc.ArticleAttachments;
 import org.zendesk.client.v2.model.hc.Category;
@@ -74,15 +44,7 @@ import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
 import java.nio.charset.Charset;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.NoSuchElementException;
+import java.util.*;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
@@ -1855,6 +1817,10 @@ public class Zendesk implements Closeable {
             handleList(Holiday.class, "holidays")));
     }
 
+    public SideloadBuilder sideload() {
+        return new SideloadBuilder();
+    }
+
     //////////////////////////////////////////////////////////////////////
     // Helper methods
     //////////////////////////////////////////////////////////////////////
@@ -1986,6 +1952,7 @@ public class Zendesk implements Closeable {
         }
     }
 
+
     protected <T> ZendeskAsyncCompletionHandler<T> handle(final Class<T> clazz, final String name, final Class... typeParams) {
         return new BasicAsyncCompletionHandler<>(clazz, name, typeParams);
     }
@@ -2000,6 +1967,7 @@ public class Zendesk implements Closeable {
             }
         };
     }
+
 
     private static final String NEXT_PAGE = "next_page";
     private static final String END_TIME = "end_time";
@@ -2057,8 +2025,33 @@ public class Zendesk implements Closeable {
         }
     }
 
+    private class PagedAsyncSideloadCompletionHandler<T> extends PagedAsyncCompletionHandler<T> {
+        private final Class<T> clazz;
+
+        public PagedAsyncSideloadCompletionHandler(Class<T> clazz) {
+            this.clazz = clazz;
+        }
+
+        @Override
+        public T onCompleted(Response response) throws Exception {
+            logResponse(response);
+            if (isStatus2xx(response)) {
+                JsonNode responseNode = mapper.readTree(response.getResponseBodyAsBytes());
+                setPagedProperties(responseNode, clazz);
+                return mapper.convertValue(responseNode, clazz);
+            } else if (isRateLimitResponse(response)) {
+                throw new ZendeskResponseRateLimitException(response);
+            }
+            throw new ZendeskResponseException(response);
+        }
+    }
+
     protected <T> PagedAsyncCompletionHandler<List<T>> handleList(final Class<T> clazz, final String name) {
         return new PagedAsyncListCompletionHandler<>(clazz, name);
+    }
+
+    protected <T> PagedAsyncCompletionHandler<T> handleSideload(final Class<T> clazz) {
+        return new PagedAsyncSideloadCompletionHandler<>(clazz);
     }
 
     private static final long FIVE_MINUTES = TimeUnit.MINUTES.toMillis(5);
@@ -2494,6 +2487,52 @@ public class Zendesk implements Closeable {
 
     }
 
+    private class PagedWithSideloadIterable<T> implements Iterable<T> {
+
+        private final Uri url;
+        private final PagedAsyncCompletionHandler<T> handler;
+
+        private PagedWithSideloadIterable(Uri url, PagedAsyncCompletionHandler<T> handler) {
+            this.handler = handler;
+            this.url = url;
+        }
+
+        public Iterator<T> iterator() {
+            return new PagedIterator(url);
+        }
+
+        private class PagedIterator implements Iterator<T> {
+
+            private String nextPage;
+
+            public PagedIterator(Uri url) {
+                this.nextPage = url.toString();
+            }
+
+            public boolean hasNext() {
+                if (nextPage == null || nextPage.equalsIgnoreCase("null")) {
+                    return false;
+                }
+                return true;
+            }
+
+            public T next() {
+                if (!hasNext()) {
+                    throw new NoSuchElementException();
+                }
+
+                T values = complete(submit(req("GET", nextPage), handler));
+                nextPage = handler.getNextPage();
+                return values;
+            }
+
+            public void remove() {
+                throw new UnsupportedOperationException();
+            }
+        }
+
+    }
+
     public static class Builder {
         private AsyncHttpClient client = null;
         private final String url;
@@ -2556,6 +2595,39 @@ public class Zendesk implements Closeable {
                 return new Zendesk(client, url, oauthToken);
             }
             return new Zendesk(client, url, username, password);
+        }
+    }
+
+    public class SideloadBuilder {
+        private Set<String> sideloads = new HashSet<>();
+
+        public SideloadBuilder withUsers() {
+            this.sideloads.add("users");
+            return this;
+        }
+
+        public SideloadBuilder withGroups() {
+            this.sideloads.add("groups");
+            return this;
+        }
+
+        public SideloadBuilder withTickets() {
+            this.sideloads.add("tickets");
+            return this;
+        }
+
+        public Iterable<AuditsWithSideload> getTicketAudits(long id) {
+
+            TemplateUri uri = tmpl("/tickets/{ticketId}/audits.json{?include}{&per_page}")
+                    .set("ticketId", id)
+                    .set("per_page", 1)
+                    .set("include", buildIncludeParam());
+
+            return new PagedWithSideloadIterable<>(uri, handleSideload(AuditsWithSideload.class));
+        }
+
+        private String buildIncludeParam(){
+            return String.join(",", sideloads);
         }
     }
 }
