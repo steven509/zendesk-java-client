@@ -2618,9 +2618,8 @@ public class Zendesk implements Closeable {
 
         public Iterable<AuditsWithSideload> getTicketAudits(long id) {
 
-            TemplateUri uri = tmpl("/tickets/{ticketId}/audits.json{?include}{&per_page}")
+            TemplateUri uri = tmpl("/tickets/{ticketId}/audits.json{?include}")
                     .set("ticketId", id)
-                    .set("per_page", 1)
                     .set("include", buildIncludeParam());
 
             return new PagedWithSideloadIterable<>(uri, handleSideload(AuditsWithSideload.class));
